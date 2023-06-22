@@ -1,8 +1,8 @@
 use std::iter::{once, repeat};
 use std::mem::size_of;
 
-use rand::{Rng, SeedableRng};
 use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 
 use super::*;
 
@@ -83,7 +83,7 @@ pub fn test_into_vec() {
 pub fn test_allocation_from_iter() {
     let arena = TypedArena::new();
     let values = vec![1, 2, 3, 4, 5];
-    let slice = arena.alloc_from_iter(values.into_iter());
+    let slice = arena.alloc_from_iter_reg(values.into_iter());
 
     assert_eq!(slice, &[1, 2, 3, 4, 5]);
 }
@@ -147,14 +147,17 @@ pub fn test_retain_coalesce() {
     // Allocating the minimum # required for the arena to waste as much memory as possible
     // (10 items = 10 chunks), then we allocate just enough to fill the coalesced arena
     // (total = 4088; 8 + 16 + 32 + 64 + 128 + 256 + 512 + 1024 + 2048)
-    let bad_sequence = (2..).map(|mut i| {
-        let mut res = 1 << i;
-        while i > 1 {
-            i -= 2;
-            res -= 1 << i;
-        }
-        res
-    }).take(10).chain(once(1355));
+    let bad_sequence = (2..)
+        .map(|mut i| {
+            let mut res = 1 << i;
+            while i > 1 {
+                i -= 2;
+                res -= 1 << i;
+            }
+            res
+        })
+        .take(10)
+        .chain(once(1355));
     for i in bad_sequence {
         arena.alloc_from_iter_fast(vec![[i; PAGE / size_of::<usize>() / 8]; i]);
     }
@@ -187,7 +190,7 @@ pub fn test_iter_after_allocation() {
 #[test]
 pub fn test_alloc_zero_elements() {
     let arena = TypedArena::<usize>::new();
-    let slice = arena.alloc_from_iter(vec![].into_iter());
+    let slice = arena.alloc_from_iter_reg(vec![].into_iter());
 
     assert!(slice.is_empty());
     assert_eq!(arena.len(), 0);
@@ -210,7 +213,7 @@ pub fn test_grow_in_large_increments() {
     let arena = TypedArena::new();
     for _ in 1..=10 {
         let range: Vec<_> = (1..=HUGE_PAGE).collect();
-        arena.alloc_from_iter(range.into_iter());
+        arena.alloc_from_iter_reg(range.into_iter());
     }
 
     // Should have grown 10 times because each allocation was large
@@ -223,7 +226,7 @@ pub fn test_grow_uneven() {
     let mut rand = SmallRng::seed_from_u64(9238157);
     for _ in 1..=100 {
         let range: Vec<_> = (1..=(10u32.pow(rand.gen_range(3..5) + 1))).collect();
-        arena.alloc_from_iter(range.into_iter());
+        arena.alloc_from_iter_reg(range.into_iter());
     }
 
     // Should have grown, but not 1000 times, because some allocations were large
@@ -242,7 +245,7 @@ pub fn test_alloc_raw_slice() {
 #[test]
 pub fn test_alloc_a_lot() {
     let arena = TypedArena::<usize>::new();
-    arena.alloc_from_iter(1..=1000000);
+    arena.alloc_from_iter_reg(1..=1000000);
     assert_eq!(arena.len(), 1000000);
     // Still only 1 chunk
     assert_eq!(arena.used_chunks.get(), 1);
@@ -253,7 +256,7 @@ pub fn test_len_after_allocations() {
     let arena = TypedArena::new();
     arena.alloc(1);
     arena.alloc(2);
-    arena.alloc_from_iter(vec![3, 4, 5]);
+    arena.alloc_from_iter_reg(vec![3, 4, 5]);
 
     // The length should match the number of allocated elements
     assert_eq!(arena.len(), 5);
@@ -268,7 +271,7 @@ pub fn test_len_after_big_allocations() {
     let arena = TypedArena::new();
     arena.alloc([1; 400]);
     arena.alloc([2; 400]);
-    arena.alloc_from_iter(vec![[3; 400], [4; 400], [5; 400]]);
+    arena.alloc_from_iter_reg(vec![[3; 400], [4; 400], [5; 400]]);
 
     // The length should match the number of allocated elements
     assert_eq!(arena.len(), 5);
@@ -291,7 +294,7 @@ pub fn test_large_allocations() {
 
     for i in 10_000..11_000 {
         let vec = vec![[i; 1024]; 32];
-        arena.alloc_from_iter(vec);
+        arena.alloc_from_iter_reg(vec);
     }
     assert_eq!(arena.len(), 42_000);
 }
@@ -303,8 +306,10 @@ pub fn test_iter_large_allocations_uneven() {
 
     for _ in 0..100 {
         let len = rand.gen_range(0..20);
-        let vec = (0..len).map(|_| rand.gen::<u16>().saturating_add(1)).collect::<Vec<_>>();
-        let vec = arena.alloc_from_iter(vec);
+        let vec = (0..len)
+            .map(|_| rand.gen::<u16>().saturating_add(1))
+            .collect::<Vec<_>>();
+        let vec = arena.alloc_from_iter_reg(vec);
         assert!(vec.iter().all(|e| *e > 0));
     }
 
@@ -326,8 +331,8 @@ pub fn test_foo_bar() {
     let foos = vec!["foo1", "foo2", "foo3", "foo4", "foo5"];
     let bars = vec!["bar1", "bar2", "bar3", "bar4", "bar5"];
 
-    arena.alloc_from_iter(foos);
-    arena.alloc_from_iter(bars);
+    arena.alloc_from_iter_reg(foos);
+    arena.alloc_from_iter_reg(bars);
 
     assert_eq!(arena.len(), 10);
 
@@ -364,7 +369,7 @@ pub fn test_allocation_pattern() {
             arena.alloc(arr);
         } else {
             let vec = vec![[i; 128]; 128];
-            arena.alloc_from_iter(vec);
+            arena.alloc_from_iter_reg(vec);
         }
     }
 
@@ -526,7 +531,7 @@ pub fn test_arena_intermingled_allocations() {
 
     for _i in 0..100 {
         arena.alloc(false);
-        arena.alloc_from_iter(repeat(true).take(10usize.pow(rand.gen_range(0..3) + 1)));
+        arena.alloc_from_iter_reg(repeat(true).take(10usize.pow(rand.gen_range(0..3) + 1)));
     }
 
     assert!(arena.len() > 200);

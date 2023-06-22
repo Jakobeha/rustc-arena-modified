@@ -16,12 +16,12 @@
 
 use std::mem::{align_of, transmute};
 
-pub use dropless_arena::DroplessArena;
 pub use self::typed_arena::TypedArena;
+pub use dropless_arena::DroplessArena;
 
-pub mod typed_arena;
-pub mod dropless_arena;
 mod arena_chunk;
+pub mod dropless_arena;
+pub mod typed_arena;
 
 // The arenas start with PAGE-sized chunks, and then each new chunk is twice as
 // big as its predecessor, up until we reach HUGE_PAGE-sized chunks, whereupon
@@ -65,7 +65,10 @@ impl<T> PtrUnstables<T> for *const T {
         // XXXXX(strict_provenance_magic): I am magic and should be a compiler intrinsic.
         // SAFETY: Pointer-to-integer transmutes are valid (if you are okay with losing the
         // provenance).
-        unsafe { transmute(self.cast::<()>()) }
+        #[allow(clippy::transmutes_expressible_as_ptr_casts)]
+        unsafe {
+            transmute(self.cast::<()>())
+        }
     }
 
     #[inline]
@@ -102,7 +105,10 @@ impl<T> PtrUnstables<T> for *mut T {
         // XXXXX(strict_provenance_magic): I am magic and should be a compiler intrinsic.
         // SAFETY: Pointer-to-integer transmutes are valid (if you are okay with losing the
         // provenance).
-        unsafe { transmute(self.cast::<()>()) }
+        #[allow(clippy::transmutes_expressible_as_ptr_casts)]
+        unsafe {
+            transmute(self.cast::<()>())
+        }
     }
 
     #[inline]

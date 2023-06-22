@@ -3,14 +3,14 @@ use std::cmp::max;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::mem::{forget, size_of};
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-use std::ptr::{drop_in_place, NonNull, null_mut, write};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::ptr::{drop_in_place, null_mut, write, NonNull};
 use std::slice::from_raw_parts;
 
 use smallvec::SmallVec;
 
-use crate::{HUGE_PAGE, PAGE, PtrUnstables};
 use crate::arena_chunk::ArenaChunk;
+use crate::{PtrUnstables, HUGE_PAGE, PAGE};
 
 #[cfg(test)]
 mod tests;
@@ -56,7 +56,7 @@ pub struct GenIter<'a, T, const ITER_REF: bool> {
     /// are iterating the last chunk, this will be 0 (unset) even though we have more entries
     chunk_remaining_entries: usize,
     /// Index in the arena of the current element being iterated
-    element_index: usize
+    element_index: usize,
 }
 
 /// An iterable which can be allocated faster into the arena than the default [IntoIterator]
@@ -65,7 +65,7 @@ pub struct GenIter<'a, T, const ITER_REF: bool> {
 /// `rustc_arena` uses default implementations, but those are unstable, so instead you will need to
 /// call [TypedArena::alloc_from_iter_fast] manually. Unlike `rustc_arena` you can implement this on
 /// your own collections, although they will probably just delegate to one of builtin
-/// implementations; and often, simply using [TypedArena::alloc_from_iter] will as fast or fast
+/// implementations; and often, simply using [TypedArena::alloc_from_iter_reg] will as fast or fast
 /// enough, and you won't need a custom implementation at all.
 pub trait IterWithFastAlloc<T> {
     fn alloc_into(self, arena: &TypedArena<T>) -> &[T];
@@ -109,7 +109,7 @@ impl<T> TypedArena<T> {
                 let ptr = NonNull::<T>::dangling().as_ptr();
                 // This `write` is equivalent to `forget`
                 write(ptr, object);
-                return &*ptr
+                return &*ptr;
             }
         }
 
@@ -137,7 +137,7 @@ impl<T> TypedArena<T> {
     /// collecting step. This default could be made more efficient, like
     /// [crate::DroplessArena::alloc_from_iter], but it's not hot enough to bother.
     #[inline]
-    pub fn alloc_from_iter(&self, iter: impl IntoIterator<Item=T>) -> &[T] {
+    pub fn alloc_from_iter_reg(&self, iter: impl IntoIterator<Item = T>) -> &[T] {
         self.alloc_from_iter_fast(iter.into_iter().collect::<SmallVec<[_; 8]>>())
     }
 
@@ -146,17 +146,23 @@ impl<T> TypedArena<T> {
     /// Unlike `rustc`'s arena, we only return shared references, because we also allow iterating
     /// all elements behind a shared reference.
     ///
-    /// This is equivalent semantics to [Self::alloc_from_iter] except it's faster, whereas
-    /// [Self::alloc_from_iter] permits more types.
+    /// This is equivalent semantics to [Self::alloc_from_iter_reg] except it's faster, whereas
+    /// [Self::alloc_from_iter_reg] permits more types.
     #[inline]
-    fn alloc_from_iter_fast(&self, iter: impl IterWithFastAlloc<T>) -> &[T] {
+    pub fn alloc_from_iter_fast(&self, iter: impl IterWithFastAlloc<T>) -> &[T] {
         iter.alloc_into(self)
     }
 
-    /// Returns the number of allocated elements in the arena.
+    /// Number of allocated elements in the arena.
     #[inline]
     pub fn len(&self) -> usize {
         self.len.get()
+    }
+
+    /// Does the arena have any allocated elements?
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Iterates all allocated elements in the arena.
@@ -196,7 +202,9 @@ impl<T> TypedArena<T> {
                 //
                 // Also, elem.as_ptr() is alive, and we have the only reference since we have a mutable
                 // reference to the entire arena.
-                unsafe { drop_in_place(elem.as_ptr()); }
+                unsafe {
+                    drop_in_place(elem.as_ptr());
+                }
             }
         }));
 
@@ -204,7 +212,12 @@ impl<T> TypedArena<T> {
         // Update len, num used chunks, used chunk entries, ptr, and end
         self.len.set(0);
         if size_of::<T>() != 0 {
-            for chunk in self.chunks.borrow_mut().iter_mut().take(self.used_chunks.get()) {
+            for chunk in self
+                .chunks
+                .borrow_mut()
+                .iter_mut()
+                .take(self.used_chunks.get())
+            {
                 chunk.entries = 0;
             }
             self.used_chunks.set(0);
@@ -212,7 +225,6 @@ impl<T> TypedArena<T> {
             self.ptr.set(null_mut());
             self.end.set(null_mut());
         }
-
 
         // Still unwind if we panicked
         if let Err(caught_panic) = panic_result {
@@ -265,7 +277,8 @@ impl<T> TypedArena<T> {
                         let mut next_is_write_iter_at_read_iter = is_write_iter_at_read_iter;
                         if write_iter.chunk_remaining_entries == 1 {
                             let mut chunks = self.chunks.borrow_mut();
-                            let write_chunk = chunks.get_mut(write_iter.chunk_index)
+                            let write_chunk = chunks
+                                .get_mut(write_iter.chunk_index)
                                 .expect("write_iter chunk index out of bounds");
                             let difference = write_chunk.capacity - write_chunk.entries;
                             if difference > 0 {
@@ -306,14 +319,17 @@ impl<T> TypedArena<T> {
         if size_of::<T>() != 0 {
             let mut chunks = self.chunks.borrow_mut();
             let mut num_entries = 0;
-            let used_chunks = chunks.iter().take_while(|chunk| {
-                if num_entries < num_kept {
-                    num_entries += chunk.entries;
-                    true
-                } else {
-                    false
-                }
-            }).count();
+            let used_chunks = chunks
+                .iter()
+                .take_while(|chunk| {
+                    if num_entries < num_kept {
+                        num_entries += chunk.entries;
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .count();
             if num_entries < num_kept {
                 debug_assert_eq!(used_chunks, self.used_chunks.get());
                 num_entries = old_len;
@@ -350,7 +366,9 @@ impl<T> TypedArena<T> {
             // Create `len` ZSTs which will be dropped when the vector is.
             // Remember: a random non-null pointer is a valid reference to a ZST, and dereferencing
             // is probably a no-op
-            elements.extend((0..self.len()).map(|_| unsafe { NonNull::<T>::dangling().as_ptr().read() }));
+            elements.extend(
+                (0..self.len()).map(|_| unsafe { NonNull::<T>::dangling().as_ptr().read() }),
+            );
             return elements;
         }
 
@@ -400,8 +418,13 @@ impl<T> TypedArena<T> {
     /// Allocate a contiguous slice of data and return a pointer to the start of the slice. The
     /// slice is uninitialized (why we return a pointer), and you must initialize it before calling
     /// other arena methods or dropping the arena, or you will cause UB.
+    ///
+    /// # Safety
+    ///
+    /// You must initialize the slice before calling other arena methods or dropping the arena. If
+    /// iterating, you must initialize the slice before advancing the iterator.
     #[inline]
-    unsafe fn alloc_raw_slice(&self, len: usize) -> *mut T {
+    pub unsafe fn alloc_raw_slice(&self, len: usize) -> *mut T {
         assert_ne!(len, 0);
 
         self.len.set(self.len.get() + len);
@@ -534,7 +557,9 @@ impl<T> Drop for TypedArena<T> {
             // allocated into an arena and therefore already in an effectively undefined location,
             // without any adjacent structures)
             for _ in 0..self.len() {
-                unsafe { drop_in_place(NonNull::<T>::dangling().as_ptr()); }
+                unsafe {
+                    drop_in_place(NonNull::<T>::dangling().as_ptr());
+                }
             }
         } else {
             // `ArenaChunk` drop ensures that the memory is dropped, but we have to drop the contents
@@ -591,7 +616,7 @@ impl<'a, T, const IS_REF: bool> GenIter<'a, T, IS_REF> {
     /// Gets a the next element as a pointer
     pub fn next_ptr(&mut self) -> Option<NonNull<T>> {
         if !self.has_next() {
-            return None
+            return None;
         }
 
         let element = self.chunk_data;
@@ -606,13 +631,15 @@ impl<'a, T, const IS_REF: bool> GenIter<'a, T, IS_REF> {
                 // We've exhausted the current chunk, so move to the next one
                 self.chunk_index += 1;
                 let chunks = self.arena.chunks.borrow();
-                let chunk = chunks.get(self.chunk_index)
-                    .expect("ArenaIter::next invariant error: arena has more elements but no more chunks");
+                let chunk = chunks.get(self.chunk_index).expect(
+                    "ArenaIter::next invariant error: arena has more elements but no more chunks",
+                );
                 self.chunk_data = NonNull::new(chunk.storage).unwrap();
                 self.chunk_remaining_entries = chunk.entries;
             } else {
                 // SAFETY: We're still in the chunk, so we have a valid pointer and add is valid
-                self.chunk_data = unsafe { NonNull::new_unchecked(self.chunk_data.as_ptr().add(1)) };
+                self.chunk_data =
+                    unsafe { NonNull::new_unchecked(self.chunk_data.as_ptr().add(1)) };
                 self.chunk_remaining_entries = self.chunk_remaining_entries.saturating_sub(1);
             }
         }
@@ -626,7 +653,6 @@ impl<'a, T, const IS_REF: bool> GenIter<'a, T, IS_REF> {
         //   the last chunk) the arena has more elements
         self.next_ptr().map(|e| unsafe { e.as_ref() })
     }
-
 
     /// Get the number of remaining elements, assuming there are no new ones
     #[inline]
@@ -690,7 +716,9 @@ impl<T, const N: usize> IterWithFastAlloc<T> for std::array::IntoIter<T, N> {
         // Move the content to the arena by copying and then forgetting it.
         unsafe {
             let start_ptr = arena.alloc_raw_slice(len);
-            self.as_slice().as_ptr().copy_to_nonoverlapping(start_ptr, len);
+            self.as_slice()
+                .as_ptr()
+                .copy_to_nonoverlapping(start_ptr, len);
             forget(self);
             from_raw_parts(start_ptr, len)
         }

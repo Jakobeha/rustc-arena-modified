@@ -7,8 +7,8 @@ use std::slice::from_raw_parts_mut;
 
 use smallvec::SmallVec;
 
-use crate::{HUGE_PAGE, PAGE, PtrUnstables};
 use crate::arena_chunk::ArenaChunk;
+use crate::{PtrUnstables, HUGE_PAGE, PAGE};
 
 /// An arena that can hold objects of multiple different types that impl `Copy`
 /// and/or satisfy `!mem::needs_drop`.
@@ -55,6 +55,7 @@ impl DroplessArena {
     ///
     /// *Panics* if given a type with drop code. This method's signature looks like it can allocate
     /// any object, but it asserts ![needs_drop] at runtime.
+    #[allow(clippy::mut_from_ref)]
     #[inline]
     pub fn alloc<T>(&self, object: T) -> &mut T {
         assert!(!needs_drop::<T>());
@@ -72,6 +73,7 @@ impl DroplessArena {
     ///
     /// *Panics* if you try to allocate ZSTs. Additionally, like with [Self::alloc], this *panics*
     /// if you allocate an object with drop code.
+    #[allow(clippy::mut_from_ref)]
     #[inline]
     pub fn alloc_from_iter<T, I: IntoIterator<Item = T>>(&self, iter: I) -> &mut [T] {
         let iter = iter.into_iter();
@@ -118,6 +120,7 @@ impl DroplessArena {
     ///
     /// This will *panic* if passed a zero-sized type or empty slice. Like [Self::alloc], it can't
     /// be given a type with drop code, but the `T: Copy` trait checks this at compile time.
+    #[allow(clippy::mut_from_ref)]
     #[inline]
     pub fn alloc_slice<T: Copy>(&self, slice: &[T]) -> &mut [T] {
         assert_ne!(size_of::<T>(), 0);
@@ -131,6 +134,7 @@ impl DroplessArena {
         }
     }
 
+    #[allow(clippy::mut_from_ref)]
     #[inline]
     unsafe fn write_from_iter<T, I: Iterator<Item = T>>(
         &self,

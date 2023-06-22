@@ -2,11 +2,11 @@
 
 extern crate rand;
 #[cfg(feature = "nightly")]
-extern crate rustc_driver;
-#[cfg(feature = "nightly")]
 extern crate rustc_arena;
+#[cfg(feature = "nightly")]
+extern crate rustc_driver;
 
-use rand::{Rng, rngs::SmallRng, SeedableRng};
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 
 // region benchmark abstraction / implementation
 trait Bencher {
@@ -44,7 +44,11 @@ impl Bencher for MockBencher {
         f();
     }
 
-    fn iter_batched<I, O>(&mut self, mut setup: impl FnMut() -> I, mut routine: impl FnMut(I) -> O) {
+    fn iter_batched<I, O>(
+        &mut self,
+        mut setup: impl FnMut() -> I,
+        mut routine: impl FnMut(I) -> O,
+    ) {
         routine(setup());
     }
 }
@@ -52,10 +56,13 @@ impl Bencher for MockBencher {
 
 // region arena abstraction and implementation
 trait TypedArena<T>: Default {
-    type Iter<'a>: Iterator<Item=&'a T> where Self: 'a, T: 'a;
+    type Iter<'a>: Iterator<Item = &'a T>
+    where
+        Self: 'a,
+        T: 'a;
 
     fn alloc(&self, value: T) -> &T;
-    fn alloc_from_iter(&self, values: impl Iterator<Item=T>) -> &[T];
+    fn alloc_from_iter(&self, values: impl Iterator<Item = T>) -> &[T];
     fn iter(&mut self) -> Self::Iter<'_>;
     fn into_vec(self) -> Vec<T>;
     fn supports(bench_fn: &'static str) -> bool;
@@ -68,8 +75,8 @@ impl<T> TypedArena<T> for rustc_arena_modified::TypedArena<T> {
         self.alloc(value)
     }
 
-    fn alloc_from_iter(&self, values: impl Iterator<Item=T>) -> &[T] {
-        self.alloc_from_iter(values)
+    fn alloc_from_iter(&self, values: impl Iterator<Item = T>) -> &[T] {
+        self.alloc_from_iter_reg(values)
     }
 
     fn iter(&mut self) -> Self::Iter<'_> {
@@ -92,7 +99,7 @@ impl<T> TypedArena<T> for typed_arena::Arena<T> {
         self.alloc(value)
     }
 
-    fn alloc_from_iter(&self, values: impl Iterator<Item=T>) -> &[T] {
+    fn alloc_from_iter(&self, values: impl Iterator<Item = T>) -> &[T] {
         self.alloc_extend(values)
     }
 
@@ -131,7 +138,7 @@ impl<T> TypedArena<T> for rustc_arena::TypedArena<T> {
         self.alloc(value)
     }
 
-    fn alloc_from_iter(&self, values: impl Iterator<Item=T>) -> &[T] {
+    fn alloc_from_iter(&self, values: impl Iterator<Item = T>) -> &[T] {
         self.alloc_from_iter(values)
     }
 
@@ -168,7 +175,7 @@ trait Benchmarks: Bencher {
     fn bench_alloc_from_iter<T: TypedArena<usize>>(
         &mut self,
         n_allocations: usize,
-        max_iter_size: usize
+        max_iter_size: usize,
     ) {
         let mut rng = SmallRng::seed_from_u64(42);
         let arena = T::default();
@@ -209,7 +216,7 @@ trait Benchmarks: Bencher {
                 }
                 arena
             },
-            |arena| Self::black_box(arena.into_vec())
+            |arena| Self::black_box(arena.into_vec()),
         );
     }
 }
@@ -274,8 +281,11 @@ macro_rules! generate_benches {
 #[cfg(feature = "bench")]
 fn sample_size() -> usize {
     std::env::var("SAMPLE_SIZE")
-        .ok().filter(|s| !s.is_empty())
-        .map_or(10, |s| s.parse().expect("SAMPLE_SIZE must be an integer or unset"))
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map_or(10, |s| {
+            s.parse().expect("SAMPLE_SIZE must be an integer or unset")
+        })
 }
 
 #[cfg(feature = "bench")]

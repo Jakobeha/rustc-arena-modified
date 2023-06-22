@@ -129,8 +129,8 @@ jobs:
             ${{ runner.os }}-benches-
             ${{ runner.os }}-
       - name: Build benchmarks
-        run: cargo bench --all-features --no-run
+        run: cargo bench --no-run
         working-directory: ./benches
       - name: Run benchmarks
-        run: cargo bench --all-features
+        run: cargo bench
         working-directory: ./benches

@@ -1,4 +1,4 @@
-use std::mem::{forget, needs_drop, size_of};
+use std::mem::{forget, needs_drop, size_of, MaybeUninit};
 use std::ptr::{drop_in_place, null_mut, slice_from_raw_parts_mut};
 
 pub struct ArenaChunk<T = u8> {
@@ -23,7 +23,11 @@ impl<T> ArenaChunk<T> {
         let mut vec = Vec::with_capacity(capacity);
         let storage = vec.as_mut_ptr();
         forget(vec);
-        ArenaChunk { storage, entries: 0, capacity }
+        ArenaChunk {
+            storage,
+            entries: 0,
+            capacity,
+        }
     }
 
     /// Destroys this arena chunk.
@@ -66,12 +70,13 @@ impl<T> Drop for ArenaChunk<T> {
     fn drop(&mut self) {
         // If `storage` is null, we don't want to drop. Otherwise we've already run the drop code,
         // but need to free the memory.
-        if !self.storage.is_null() {
-            // This will cause the memory to be freed, but no drop code since u8 has none
+        if size_of::<T>() != 0 && !self.storage.is_null() {
+            // This will cause the memory to be freed, but no drop code since we use MaybeUninit
             unsafe {
-                drop(Box::<[u8]>::from_raw(
-                    slice_from_raw_parts_mut(self.storage.cast::<u8>(), self.capacity)
-                ));
+                drop(Box::<[MaybeUninit<T>]>::from_raw(slice_from_raw_parts_mut(
+                    self.storage.cast::<MaybeUninit<T>>(),
+                    self.capacity,
+                )));
             }
         }
     }
