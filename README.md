@@ -26,12 +26,14 @@ A port of [`rustc_arena`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_a
 
 ## Benchmarks
 
+Benchmarks are run for a sequence of operations including insertion, retrieval, iteration, and removal. We vary the # and size of maps.
+
 [Full Report](criterion/report/index.html)
 
-![alloc](criterion/alloc/report/violin.svg)
-![alloc_from_iter](criterion/alloc_from_iter/report/violin.svg)
-![iter](criterion/iter/report/violin.svg)
-![into_vec](criterion/into_vec/report/violin.svg)
+![1_map_3000_entries](criterion/1_map_3000_entries/report/violin.svg)
+![10_maps_300_entries](criterion/10_maps_3000_entries/report/violin.svg)
+![100_maps_30_entries](criterion/100_maps_3000_entries/report/violin.svg)
+![1000_maps_3_entries](criterion/1000_maps_3000_entries/report/violin.svg)
 
 ## License
 

@@ -110,10 +110,28 @@ pub fn test_retain() {
     arena.alloc(2);
     arena.alloc(3);
 
-    arena.retain(|&x| x % 2 == 0);
+    arena.retain(|&mut x| x % 2 == 0);
 
     let mut iter = arena.iter();
     assert_eq!(*iter.next().unwrap(), 2);
+    assert!(iter.next().is_none());
+}
+
+#[test]
+pub fn test_retain_mutate() {
+    let mut arena = TypedArena::new();
+    arena.alloc(1);
+    arena.alloc(2);
+    arena.alloc(3);
+
+    arena.retain(|x| {
+        let res = *x % 2 == 0;
+        *x += 1;
+        res
+    });
+
+    let mut iter = arena.iter();
+    assert_eq!(*iter.next().unwrap(), 3);
     assert!(iter.next().is_none());
 }
 
@@ -316,7 +334,7 @@ pub fn test_iter_large_allocations_uneven() {
     // Test iterator
     let mut iter = arena.iter();
     let mut total_elems = 0;
-    while let Some(elem) = iter.next_ref() {
+    while let Some(elem) = iter.next() {
         total_elems += 1;
         assert!(*elem > 0);
     }
@@ -338,10 +356,10 @@ pub fn test_foo_bar() {
 
     let mut iter = arena.iter();
     for _ in 0..5 {
-        assert!(iter.next_ref().unwrap().starts_with("foo"));
+        assert!(iter.next().unwrap().starts_with("foo"));
     }
     for _ in 0..5 {
-        assert!(iter.next_ref().unwrap().starts_with("bar"));
+        assert!(iter.next().unwrap().starts_with("bar"));
     }
 }
 
@@ -352,11 +370,15 @@ pub fn test_retain_again() {
         arena.alloc(i);
     }
 
-    arena.retain(|&x| x % 3 == 0);
+    arena.retain(|x| {
+        let res = *x % 3 == 0;
+        *x += 2;
+        res
+    });
 
     let mut iter = arena.iter();
-    while let Some(&elem) = iter.next_ref() {
-        assert_eq!(elem % 3, 0);
+    while let Some(&elem) = iter.next() {
+        assert_eq!(elem % 3, 2);
     }
 }
 
@@ -456,7 +478,7 @@ pub fn test_arena_with_struct() {
     let mut iter = arena.iter();
     for i in 0..100 {
         let expected = TestStruct { a: i, b: 2 * i };
-        assert_eq!(*iter.next_ref().unwrap(), expected);
+        assert_eq!(*iter.next().unwrap(), expected);
     }
 }
 
@@ -517,11 +539,11 @@ pub fn test_arena_with_zst_iter() {
     // Iterate over the items and ensure the expected number of items are present.
     let mut iter = arena.iter();
     for _ in 0..100 {
-        assert!(iter.next_ref().is_some());
+        assert!(iter.next().is_some());
     }
 
     // After 100 elements, the iterator should return None.
-    assert!(iter.next_ref().is_none());
+    assert!(iter.next().is_none());
 }
 
 #[test]

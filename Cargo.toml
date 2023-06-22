@@ -13,6 +13,9 @@ license = "MIT/Apache-2.0"
 readme = "README.md"
 autobenches = false
 
+[features]
+slab = []
+
 # Benchmarks are additional tests, we run them with the criterion bencher replaced by stubs
 [[test]]
 name = "typed-arena-benchmarks"

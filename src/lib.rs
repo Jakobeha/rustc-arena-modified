@@ -10,17 +10,19 @@
 //! itself is still alive. The benefit of an arena is very fast allocation; just a pointer bump.
 
 // TODO:
-//   - fix inconsistent TypedArena test
-//   - add benchmarks comparing this to typed-arena
 //   - add tests for untested (e.g. dropless arena)
 
 use std::mem::{align_of, transmute};
 
-pub use self::typed_arena::TypedArena;
+pub use self::typed_arena::{TypedArena, TypedArenaGen, TypedArenaMut};
 pub use dropless_arena::DroplessArena;
+#[cfg(feature = "slab")]
+pub use slab_arena::SlabArena;
 
 mod arena_chunk;
 pub mod dropless_arena;
+#[cfg(feature = "slab")]
+pub mod slab_arena;
 pub mod typed_arena;
 
 // The arenas start with PAGE-sized chunks, and then each new chunk is twice as

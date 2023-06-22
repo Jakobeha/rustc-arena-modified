@@ -7,6 +7,8 @@ extern crate rustc_arena;
 extern crate rustc_driver;
 
 use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rustc_arena_modified::typed_arena::RefMutability;
+use std::marker::PhantomData;
 
 // region benchmark abstraction / implementation
 trait Bencher {
@@ -56,7 +58,7 @@ impl Bencher for MockBencher {
 
 // region arena abstraction and implementation
 trait TypedArena<T>: Default {
-    type Iter<'a>: Iterator<Item = &'a T>
+    type Iter<'a>: Iterator<Item = &'a mut T>
     where
         Self: 'a,
         T: 'a;
@@ -68,19 +70,19 @@ trait TypedArena<T>: Default {
     fn supports(bench_fn: &'static str) -> bool;
 }
 
-impl<T> TypedArena<T> for rustc_arena_modified::TypedArena<T> {
-    type Iter<'a> = rustc_arena_modified::typed_arena::Iter<'a, T> where T: 'a;
+impl<T, RM: RefMutability> TypedArena<T> for rustc_arena_modified::TypedArenaGen<T, RM> {
+    type Iter<'a> = rustc_arena_modified::typed_arena::IterMut<'a, T> where T: 'a;
 
     fn alloc(&self, value: T) -> &T {
-        self.alloc(value)
+        RM::as_ref(self.alloc(value))
     }
 
     fn alloc_from_iter(&self, values: impl Iterator<Item = T>) -> &[T] {
-        self.alloc_from_iter_reg(values)
+        RM::as_slice_ref(self.alloc_from_iter_reg(values))
     }
 
     fn iter(&mut self) -> Self::Iter<'_> {
-        rustc_arena_modified::TypedArena::iter(self)
+        self.iter_mut()
     }
 
     fn into_vec(self) -> Vec<T> {
@@ -92,47 +94,38 @@ impl<T> TypedArena<T> for rustc_arena_modified::TypedArena<T> {
     }
 }
 
-impl<T> TypedArena<T> for typed_arena::Arena<T> {
-    type Iter<'a> = TypedArenaIter<'a, T> where T: 'a;
+#[cfg(feature = "slab")]
+impl<T> TypedArena<T> for rustc_arena_modified::SlabArena<T> {
+    type Iter<'a> = std::iter::Empty<&'a mut T> where T: 'a;
 
     fn alloc(&self, value: T) -> &T {
-        self.alloc(value)
+        self.alloc(value).leak()
     }
 
-    fn alloc_from_iter(&self, values: impl Iterator<Item = T>) -> &[T] {
-        self.alloc_extend(values)
+    fn alloc_from_iter(&self, _values: impl Iterator<Item = T>) -> &[T] {
+        panic!("rustc_arena_modified::SlabArena doesn't implement alloc_from_iter")
     }
 
     fn iter(&mut self) -> Self::Iter<'_> {
-        TypedArenaIter(self.iter_mut())
+        panic!("rustc_arena_modified::SlabArena doesn't implement iter")
     }
 
     fn into_vec(self) -> Vec<T> {
-        self.into_vec()
+        panic!("rustc_arena_modified::SlabArena doesn't implement into_vec")
     }
 
-    fn supports(_bench_fn: &'static str) -> bool {
-        true
-    }
-}
-
-struct TypedArenaIter<'a, T>(typed_arena::IterMut<'a, T>);
-
-impl<'a, T> Iterator for TypedArenaIter<'a, T> {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|x| x as &T)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.0.size_hint()
+    fn supports(bench_fn: &'static str) -> bool {
+        match bench_fn {
+            "bench_alloc" => true,
+            "bench_alloc_from_iter" | "bench_iter" | "bench_into_vec" => false,
+            _ => panic!("Unknown bench function: {}", bench_fn),
+        }
     }
 }
 
 #[cfg(feature = "nightly")]
 impl<T> TypedArena<T> for rustc_arena::TypedArena<T> {
-    type Iter<'a> = std::iter::Empty<&'a T> where T: 'a;
+    type Iter<'a> = std::iter::Empty<&'a mut T> where T: 'a;
 
     fn alloc(&self, value: T) -> &T {
         self.alloc(value)
@@ -148,6 +141,67 @@ impl<T> TypedArena<T> for rustc_arena::TypedArena<T> {
 
     fn into_vec(self) -> Vec<T> {
         panic!("rustc_arena::TypedArena doesn't implement into_vec")
+    }
+
+    fn supports(bench_fn: &'static str) -> bool {
+        match bench_fn {
+            "bench_alloc" | "bench_alloc_from_iter" => true,
+            "bench_iter" | "bench_into_vec" => false,
+            _ => panic!("Unknown bench function: {}", bench_fn),
+        }
+    }
+}
+
+impl<T> TypedArena<T> for typed_arena::Arena<T> {
+    type Iter<'a> = typed_arena::IterMut<'a, T> where T: 'a;
+
+    fn alloc(&self, value: T) -> &T {
+        self.alloc(value)
+    }
+
+    fn alloc_from_iter(&self, values: impl Iterator<Item = T>) -> &[T] {
+        self.alloc_extend(values)
+    }
+
+    fn iter(&mut self) -> Self::Iter<'_> {
+        self.iter_mut()
+    }
+
+    fn into_vec(self) -> Vec<T> {
+        self.into_vec()
+    }
+
+    fn supports(_bench_fn: &'static str) -> bool {
+        true
+    }
+}
+
+/// Instead of allocating to an arena, we just allocate and leak the memory.
+struct AllocAndLeak<T>(PhantomData<T>);
+
+impl<T> Default for AllocAndLeak<T> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<T> TypedArena<T> for AllocAndLeak<T> {
+    type Iter<'a> = std::iter::Empty<&'a mut T> where T: 'a;
+
+    fn alloc(&self, value: T) -> &T {
+        Box::leak(Box::new(value))
+    }
+
+    fn alloc_from_iter(&self, values: impl Iterator<Item = T>) -> &[T] {
+        Box::leak(values.collect::<Vec<_>>().into_boxed_slice())
+    }
+
+    fn iter(&mut self) -> Self::Iter<'_> {
+        panic!("AllocAndLeak \"arena\" doesn't implement iter")
+    }
+
+    fn into_vec(self) -> Vec<T> {
+        panic!("AllocAndLeak \"arena\" doesn't implement into_vec")
     }
 
     fn supports(bench_fn: &'static str) -> bool {
@@ -251,7 +305,9 @@ macro_rules! generate_bench_group {
                 $(#[$attr])?
                 #[test]
                 fn $arena_name() {
-                    MockBencher.$bench_fn::<$arena_ty> $bench_args;
+                    if <$arena_ty as TypedArena<_>>::supports(stringify!($bench_fn)) {
+                        MockBencher.$bench_fn::<$arena_ty> $bench_args;
+                    }
                 }
             )*
         }
@@ -270,9 +326,12 @@ macro_rules! generate_benches {
         $(
             generate_bench_group!($bench_name: $bench_fn($($bench_arg),*), {
                 rustc_arena_modified: rustc_arena_modified::TypedArena<usize>,
-                typed_arena: typed_arena::Arena<usize>,
+                #[cfg(feature = "slab")]
+                slab_arena: rustc_arena_modified::SlabArena<usize>,
                 #[cfg(feature = "nightly")]
                 rustc_arena: rustc_arena::TypedArena<usize>,
+                typed_arena: typed_arena::Arena<usize>,
+                alloc_and_leak: AllocAndLeak<usize>,
             });
         )*
     };

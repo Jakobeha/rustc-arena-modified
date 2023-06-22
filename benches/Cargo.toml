@@ -13,8 +13,9 @@ harness = false
 debug = true
 
 [features]
-default = ["bench"]
+default = ["bench", "slab"]
 bench = ["criterion"]
+slab = ["rustc-arena-modified/slab"]
 nightly = []
 
 [dependencies]

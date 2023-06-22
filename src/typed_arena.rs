@@ -2,10 +2,10 @@ use std::cell::{Cell, RefCell};
 use std::cmp::max;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::mem::{forget, size_of};
+use std::mem::{forget, size_of, transmute};
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::ptr::{drop_in_place, null_mut, write, NonNull};
-use std::slice::from_raw_parts;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 
 use smallvec::SmallVec;
 
@@ -15,8 +15,18 @@ use crate::{PtrUnstables, HUGE_PAGE, PAGE};
 #[cfg(test)]
 mod tests;
 
-/// An arena that can hold objects of only one type.
-pub struct TypedArena<T> {
+/// An arena that can hold objects of only one type, allocations return shared references, and can
+/// iterate behind a shared reference
+pub type TypedArena<T> = TypedArenaGen<T, Shared>;
+
+/// An arena that can hold objects of only one type, allocations return mutable references, and can
+/// only iterate behind a mutable reference
+pub type TypedArenaMut<T> = TypedArenaGen<T, Mutable>;
+
+/// An arena that can hold objects of only one type. `RM` determines whether the references
+/// returned from allocation are mutable and whether iteration requires a mutable reference; either
+/// mutating returned references or iterating via immutable reference are possible, but not both.
+pub struct TypedArenaGen<T, RM: RefMutability> {
     /// The number of inserted entries
     len: Cell<usize>,
     /// A pointer to the next object to be allocated.
@@ -32,21 +42,25 @@ pub struct TypedArena<T> {
     /// Marker indicating that dropping the arena causes its owned
     /// instances of `T` to be dropped.
     _own: PhantomData<T>,
+    /// RM is a phantom type parameter so we need this
+    _rm: PhantomData<RM>,
 }
 
 /// Iterates all elements in an arena, and can handle new elements being allocated during iteration.
-pub type Iter<'a, T> = GenIter<'a, T, true>;
+pub type Iter<'a, T> = IterGen<'a, T, Shared>;
 
-/// Iterates pointers to all elements in the arena, and can handle new elements being allocated
+/// Iterates all elements in an arena.
+pub type IterMut<'a, T> = IterGen<'a, T, Mutable>;
+
+/// Iterates all elements in an arena, and if [Shared], can handle new elements being allocated
 /// during iteration.
-pub type PtrIter<'a, T> = GenIter<'a, T, false>;
+pub struct IterGen<'a, T, RM: RefMutability>(PtrIter<'a, T>, PhantomData<RM>);
 
-/// Iterates all elements in an arena, and can handle new elements being allocated during iteration.
-///
-/// `ITER_REF` determines whether or not the [Iterator] implementation iterates raw [NonNull]
-/// pointers or references. Without calling the [Iterator] implementation, you can iterate both.
-pub struct GenIter<'a, T, const ITER_REF: bool> {
-    /// The arena being iterated
+/// Iterates pointers to all elements in the arena, and (if shared) can handle new elements being
+/// allocated during iteration.
+pub struct PtrIter<'a, T> {
+    /// The arena being iterated. The actual `RM` is irrelevant, we put [Shared] because we only use
+    /// it like that and there may be other active references, but it may be `transmute`d.
     arena: &'a TypedArena<T>,
     /// Index of the current chunk being iterated
     chunk_index: usize,
@@ -60,18 +74,71 @@ pub struct GenIter<'a, T, const ITER_REF: bool> {
 }
 
 /// An iterable which can be allocated faster into the arena than the default [IntoIterator]
-/// implementation, using [TypedArena::alloc_raw_slice].
+/// implementation, using [TypedArenaGen::alloc_raw_slice].
 ///
 /// `rustc_arena` uses default implementations, but those are unstable, so instead you will need to
-/// call [TypedArena::alloc_from_iter_fast] manually. Unlike `rustc_arena` you can implement this on
+/// call [TypedArenaGen::alloc_from_iter_fast] manually. Unlike `rustc_arena` you can implement this on
 /// your own collections, although they will probably just delegate to one of builtin
-/// implementations; and often, simply using [TypedArena::alloc_from_iter_reg] will as fast or fast
+/// implementations; and often, simply using [TypedArenaGen::alloc_from_iter_reg] will as fast or fast
 /// enough, and you won't need a custom implementation at all.
 pub trait IterWithFastAlloc<T> {
-    fn alloc_into(self, arena: &TypedArena<T>) -> &[T];
+    fn alloc_into<RM: RefMutability>(self, arena: &TypedArenaGen<T, RM>) -> RM::SliceRef<'_, T>;
 }
 
-impl<T> Default for TypedArena<T> {
+/// Whether references to allocated objects are mutable, and iteration requires a mutable reference.
+pub trait RefMutability: private::Sealed + 'static {
+    /// `&T` or `&mut T`
+    type Ref<'a, T>
+    where
+        T: 'a;
+    /// `&[T]` or `&mut T`
+    type SliceRef<'a, T>
+    where
+        T: 'a;
+
+    /// Reference to the empty slice
+    fn empty<'a, T>() -> Self::SliceRef<'a, T>;
+    /// Dereference a pointer
+    ///
+    /// # Safety
+    /// The pointer must be valid: see [pointer::as_ref] and [pointer::as_mut]'s requirements (the
+    /// latter's are required if `Self` is [Mutable])
+    ///
+    /// [pointer::as_ref]: https://doc.rust-lang.org/std/primitive.pointer.html#method.as_ref
+    /// [pointer::as_mut]: https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut
+    unsafe fn from_ptr<'a, T>(t: *mut T) -> Self::Ref<'a, T>;
+    /// Dereference a pointer and add length metadata to make it a slice reference
+    ///
+    /// # Safety
+    /// The pointer must be valid: see [pointer::as_ref] and [pointer::as_mut]'s requirements (the
+    /// latter's are required if `Self` is [Mutable]). Additionally, you must follow the
+    /// requirements of [from_raw_parts] or [from_raw_parts_mut]
+    ///
+    /// [pointer::as_ref]: https://doc.rust-lang.org/std/primitive.pointer.html#method.as_ref
+    /// [pointer::as_mut]: https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut
+    unsafe fn from_raw_parts<'a, T>(t: *mut T, len: usize) -> Self::SliceRef<'a, T>;
+    /// Convert a reference of this type into a shared reference
+    #[allow(clippy::wrong_self_convention)]
+    fn as_ref<T>(t: Self::Ref<'_, T>) -> &T;
+    /// Convert a reference of this slice type into a shared reference
+    #[allow(clippy::wrong_self_convention)]
+    fn as_slice_ref<T>(t: Self::SliceRef<'_, T>) -> &[T];
+
+    /// Dereference a non-null pointer
+    ///
+    /// # Safety
+    /// The pointer must be valid: see [NonNull::as_ref] and [NonNull::as_mut]'s requirements (the
+    /// latter's are required if `Self` is [Mutable])
+    #[inline]
+    unsafe fn from_non_null<'a, T>(t: NonNull<T>) -> Self::Ref<'a, T> {
+        Self::from_ptr(t.as_ptr())
+    }
+}
+
+pub enum Shared {}
+pub enum Mutable {}
+
+impl<T, RM: RefMutability> Default for TypedArenaGen<T, RM> {
     /// Creates a new, empty arena
     #[inline]
     fn default() -> Self {
@@ -79,7 +146,7 @@ impl<T> Default for TypedArena<T> {
     }
 }
 
-impl<T> TypedArena<T> {
+impl<T, RM: RefMutability> TypedArenaGen<T, RM> {
     /// Creates a new, empty arena
     #[inline]
     pub fn new() -> Self {
@@ -92,15 +159,16 @@ impl<T> TypedArena<T> {
             chunks: Default::default(),
             used_chunks: Cell::new(0),
             _own: PhantomData,
+            _rm: PhantomData,
         }
     }
 
     /// Allocates an object in the `TypedArena`, returning a reference to it.
     ///
-    /// Unlike `rustc`'s arena, we only return shared references, because we also allow iterating
-    /// all elements behind a shared reference.
+    /// If the type parameter `RM` is [Shared] we return a shared reference. If `RM` is [Mutable] we
+    /// return a mutable reference.
     #[inline]
-    pub fn alloc(&self, object: T) -> &T {
+    pub fn alloc(&self, object: T) -> RM::Ref<'_, T> {
         self.len.set(self.len.get() + 1);
         if size_of::<T>() == 0 {
             // We don't actually allocate ZSTs, just prevent them from being dropped and return a
@@ -109,7 +177,7 @@ impl<T> TypedArena<T> {
                 let ptr = NonNull::<T>::dangling().as_ptr();
                 // This `write` is equivalent to `forget`
                 write(ptr, object);
-                return &*ptr;
+                return RM::from_ptr(ptr);
             }
         }
 
@@ -123,33 +191,33 @@ impl<T> TypedArena<T> {
             self.ptr.set(self.ptr.get().add(1));
             // Write into uninitialized memory.
             write(ptr, object);
-            &*ptr
+            RM::from_ptr(ptr)
         }
     }
 
     /// Allocates multiple objects in a contiguous slice, returning a reference to the slice.
     ///
-    /// Unlike `rustc`'s arena, we only return shared references, because we also allow iterating
-    /// all elements behind a shared reference.
+    /// If the type parameter `RM` is [Shared] we return a shared reference. If `RM` is [Mutable] we
+    /// return a mutable reference.
     ///
     /// This collects into a `SmallVec` and then allocates by copying from it. Use `alloc_from_iter`
     /// if possible because it's more efficient, copying directly without the intermediate
     /// collecting step. This default could be made more efficient, like
     /// [crate::DroplessArena::alloc_from_iter], but it's not hot enough to bother.
     #[inline]
-    pub fn alloc_from_iter_reg(&self, iter: impl IntoIterator<Item = T>) -> &[T] {
+    pub fn alloc_from_iter_reg(&self, iter: impl IntoIterator<Item = T>) -> RM::SliceRef<'_, T> {
         self.alloc_from_iter_fast(iter.into_iter().collect::<SmallVec<[_; 8]>>())
     }
 
     /// Allocates multiple objects in a contiguous slice, returning a reference to the slice.
     ///
-    /// Unlike `rustc`'s arena, we only return shared references, because we also allow iterating
-    /// all elements behind a shared reference.
+    /// If the type parameter `RM` is [Shared] we return a shared reference. If `RM` is [Mutable] we
+    /// return a mutable reference.
     ///
     /// This is equivalent semantics to [Self::alloc_from_iter_reg] except it's faster, whereas
     /// [Self::alloc_from_iter_reg] permits more types.
     #[inline]
-    pub fn alloc_from_iter_fast(&self, iter: impl IterWithFastAlloc<T>) -> &[T] {
+    pub fn alloc_from_iter_fast(&self, iter: impl IterWithFastAlloc<T>) -> RM::SliceRef<'_, T> {
         iter.alloc_into(self)
     }
 
@@ -165,21 +233,17 @@ impl<T> TypedArena<T> {
         self.len() == 0
     }
 
-    /// Iterates all allocated elements in the arena.
-    ///
-    /// The iterator can handle new objects being allocated. If you allocate new objects they will
-    /// be added to the end. If the iterator has already ended and you allocate new objects, it will
-    /// suddenly have more elements; if you don't want that behavior use `fuse`.
+    /// Iterates all allocated elements in the arena behind a mutable reference.
     #[inline]
-    pub fn iter(&self) -> Iter<'_, T> {
-        Iter::new(self)
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
+        // SAFETY: Same repr, this transmuted version won't be publicly exposed or used incorrectly
+        // (we can't use while [IterMut] is alive), and we're not actually violating any borrow
+        // rules with a mutable phantom type like we would if this was a mutable reference.
+        IterMut::new(unsafe { transmute(self) })
     }
 
-    /// Iterates pointers to all allocated elements in the arena.
-    ///
-    /// The iterator can handle new objects being allocated. If you allocate new objects they will
-    /// be added to the end. If the iterator has already ended and you allocate new objects, it will
-    /// suddenly have more elements; if you don't want that behavior use `fuse`.
+    /// Iterates pointers to all allocated elements in the arena behind a shared reference. This is
+    /// allows since we can have pointers even to mutably borrowed elements.
     #[inline]
     pub fn ptr_iter(&self) -> PtrIter<'_, T> {
         PtrIter::new(self)
@@ -239,7 +303,7 @@ impl<T> TypedArena<T> {
     /// rearranged elements, but if there are any raw pointers they can no longer be dereferenced
     /// without UB.
     #[inline]
-    pub fn retain(&mut self, mut predicate: impl FnMut(&T) -> bool) {
+    pub fn retain(&mut self, mut predicate: impl FnMut(&mut T) -> bool) {
         // Ensure that, even on panic, we resize len (we leak elements we didn't drop yet instead of
         // double-freeing elements we did). Furthermore, kept elements are still in the arena,
         // although this doesn't really matter and is subject to change between versions.
@@ -247,7 +311,7 @@ impl<T> TypedArena<T> {
         let panic_result = catch_unwind(AssertUnwindSafe(|| {
             let mut write_iter = self.ptr_iter();
             let mut is_write_iter_at_read_iter = true;
-            for elem in self.ptr_iter() {
+            for mut elem in self.ptr_iter() {
                 let elem_ptr = elem.as_ptr();
                 // SAFETY: elem is alive (Self::iter and Self::ptr_iter only iterate initialized data)
                 // and we have a mutable reference to the arena, so there are no other references to
@@ -264,7 +328,7 @@ impl<T> TypedArena<T> {
                 // that it is effectively forgotten; and then it will either be re-allocated if we grow
                 // the arena again, or released without drop if we drop the arena.
                 unsafe {
-                    if !predicate(elem.as_ref()) {
+                    if !predicate(elem.as_mut()) {
                         // Drop the element, keep write_iter at the same position
                         is_write_iter_at_read_iter = false;
                         drop_in_place(elem_ptr);
@@ -356,6 +420,16 @@ impl<T> TypedArena<T> {
         if let Err(caught_panic) = panic_result {
             resume_unwind(caught_panic)
         }
+    }
+
+    /// Return `self` but with a different [RefMutability].
+    ///
+    /// With a mutable reference, we can convert between mutable and immutable variants, since there
+    /// are no live allocated references.
+    #[inline]
+    pub fn convert<RM2: RefMutability>(self) -> TypedArenaGen<T, RM2> {
+        // SAFETY: Same repr
+        unsafe { transmute(self) }
     }
 
     /// Destroys this arena and collects all elements into a vector.
@@ -535,6 +609,18 @@ impl<T> TypedArena<T> {
     }
 }
 
+impl<T> TypedArenaGen<T, Shared> {
+    /// Iterates all allocated elements in the arena behind a shared reference.
+    ///
+    /// The iterator can handle new objects being allocated. If you allocate new objects they will
+    /// be added to the end. If the iterator has already ended and you allocate new objects, it will
+    /// suddenly have more elements; if you don't want that behavior use `fuse`.
+    #[inline]
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter::new(self)
+    }
+}
+
 impl<T: Debug> Debug for TypedArena<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "TypedArena")?;
@@ -542,7 +628,7 @@ impl<T: Debug> Debug for TypedArena<T> {
     }
 }
 
-impl<T> Drop for TypedArena<T> {
+impl<T, RM: RefMutability> Drop for TypedArenaGen<T, RM> {
     fn drop(&mut self) {
         if size_of::<T>() == 0 {
             // These invariants always hold, we only assert them here
@@ -586,7 +672,7 @@ impl<T> Drop for TypedArena<T> {
     }
 }
 
-impl<'a, T> IntoIterator for &'a TypedArena<T> {
+impl<'a, T> IntoIterator for &'a TypedArenaGen<T, Shared> {
     type Item = &'a T;
     type IntoIter = Iter<'a, T>;
 
@@ -596,12 +682,25 @@ impl<'a, T> IntoIterator for &'a TypedArena<T> {
     }
 }
 
-unsafe impl<T: Send> Send for TypedArena<T> {}
+impl<'a, T, RM: RefMutability> IntoIterator for &'a mut TypedArenaGen<T, RM> {
+    type Item = &'a mut T;
+    type IntoIter = IterMut<'a, T>;
 
-impl<'a, T, const IS_REF: bool> GenIter<'a, T, IS_REF> {
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+unsafe impl<T: Send, RM: RefMutability> Send for TypedArenaGen<T, RM> {}
+
+impl<'a, T> PtrIter<'a, T> {
     /// Create a new iterator for the arena
     #[inline]
-    fn new(arena: &'a TypedArena<T>) -> Self {
+    fn new<RM: RefMutability>(arena: &'a TypedArenaGen<T, RM>) -> Self {
+        // SAFETY: Same repr, this transmuted version won't be publicly exposed or used incorrectly
+        // (see [PtrIter] type doc), and we're not actually violating any borrow rules.
+        let arena = unsafe { transmute::<&'a TypedArenaGen<T, RM>, &'a TypedArena<T>>(arena) };
         let chunks = arena.chunks.borrow();
         let chunk = chunks.first();
         Self {
@@ -613,8 +712,24 @@ impl<'a, T, const IS_REF: bool> GenIter<'a, T, IS_REF> {
         }
     }
 
+    /// Get the number of remaining elements, assuming there are no new ones
+    #[inline]
+    pub fn remaining(&self) -> usize {
+        self.arena.len() - self.element_index
+    }
+
+    /// Whether we have a next element
+    #[inline]
+    pub fn has_next(&self) -> bool {
+        self.remaining() > 0
+    }
+}
+
+impl<'a, T> Iterator for PtrIter<'a, T> {
+    type Item = NonNull<T>;
+
     /// Gets a the next element as a pointer
-    pub fn next_ptr(&mut self) -> Option<NonNull<T>> {
+    fn next(&mut self) -> Option<Self::Item> {
         if !self.has_next() {
             return None;
         }
@@ -646,72 +761,76 @@ impl<'a, T, const IS_REF: bool> GenIter<'a, T, IS_REF> {
         Some(element)
     }
 
-    /// Gets the next element as a reference
     #[inline]
-    pub fn next_ref(&mut self) -> Option<&'a T> {
-        // SAFETY: The value is initialized, because the chunk has more entries and (important for
-        //   the last chunk) the arena has more elements
-        self.next_ptr().map(|e| unsafe { e.as_ref() })
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // We will return at least len more elements, but we can't return an upper bound in case
+        // some get added
+        (self.remaining(), None)
+    }
+}
+
+impl<'a, T, RM: RefMutability> IterGen<'a, T, RM> {
+    /// Create a new iterator for the arena
+    #[inline]
+    fn new(arena: &'a TypedArenaGen<T, RM>) -> Self {
+        Self(PtrIter::new(arena), PhantomData)
+    }
+
+    /// Gets a the next element as a pointer
+    pub fn next_ptr(&mut self) -> Option<NonNull<T>> {
+        self.0.next()
     }
 
     /// Get the number of remaining elements, assuming there are no new ones
     #[inline]
     pub fn remaining(&self) -> usize {
-        self.arena.len() - self.element_index
+        self.0.remaining()
     }
 
     /// Whether we have a next element
     #[inline]
     pub fn has_next(&self) -> bool {
-        self.remaining() > 0
+        self.0.has_next()
     }
 }
 
-impl<'a, T> PartialEq for Iter<'a, T> {
+impl<'a, T> PartialEq for PtrIter<'a, T> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(self.arena, other.arena) && self.element_index == other.element_index
     }
 }
 
-impl<'a, T> Iterator for Iter<'a, T> {
-    type Item = &'a T;
-
+impl<'a, T, RM: RefMutability> PartialEq for IterGen<'a, T, RM> {
     #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_ref()
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        // We will return at least len more elements, but we can't return an upper bound in case
-        // some get added
-        (self.remaining(), None)
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
     }
 }
 
-impl<'a, T> Iterator for PtrIter<'a, T> {
-    type Item = NonNull<T>;
+impl<'a, T, RM: RefMutability> Iterator for IterGen<'a, T, RM> {
+    type Item = RM::Ref<'a, T>;
 
+    /// Gets the next element as a reference. Mutable or shared depends on the `RM` type parameter.
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_ptr()
+        // SAFETY: The value is initialized, because the chunk has more entries and (important for
+        // the last chunk) the arena has more elements
+        self.next_ptr().map(|e| unsafe { RM::from_non_null(e) })
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        // We will return at least len more elements, but we can't return an upper bound in case
-        // some get added
-        (self.remaining(), None)
+        self.0.size_hint()
     }
 }
 
 impl<T, const N: usize> IterWithFastAlloc<T> for std::array::IntoIter<T, N> {
     #[inline]
-    fn alloc_into(self, arena: &TypedArena<T>) -> &[T] {
+    fn alloc_into<RM: RefMutability>(self, arena: &TypedArenaGen<T, RM>) -> RM::SliceRef<'_, T> {
         let len = self.len();
         if len == 0 {
-            return &[];
+            return RM::empty();
         }
         // Move the content to the arena by copying and then forgetting it.
         unsafe {
@@ -720,41 +839,106 @@ impl<T, const N: usize> IterWithFastAlloc<T> for std::array::IntoIter<T, N> {
                 .as_ptr()
                 .copy_to_nonoverlapping(start_ptr, len);
             forget(self);
-            from_raw_parts(start_ptr, len)
+            RM::from_raw_parts(start_ptr, len)
         }
     }
 }
 
 impl<T> IterWithFastAlloc<T> for Vec<T> {
     #[inline]
-    fn alloc_into(mut self, arena: &TypedArena<T>) -> &[T] {
+    fn alloc_into<RM: RefMutability>(
+        mut self,
+        arena: &TypedArenaGen<T, RM>,
+    ) -> RM::SliceRef<'_, T> {
         let len = self.len();
         if len == 0 {
-            return &[];
+            return RM::empty();
         }
         // Move the content to the arena by copying and then forgetting it.
         unsafe {
             let start_ptr = arena.alloc_raw_slice(len);
             self.as_ptr().copy_to_nonoverlapping(start_ptr, len);
             self.set_len(0);
-            from_raw_parts(start_ptr, len)
+            RM::from_raw_parts(start_ptr, len)
         }
     }
 }
 
 impl<A: smallvec::Array> IterWithFastAlloc<A::Item> for SmallVec<A> {
     #[inline]
-    fn alloc_into(mut self, arena: &TypedArena<A::Item>) -> &[A::Item] {
+    fn alloc_into<RM: RefMutability>(
+        mut self,
+        arena: &TypedArenaGen<A::Item, RM>,
+    ) -> RM::SliceRef<'_, A::Item> {
         let len = self.len();
         if len == 0 {
-            return &[];
+            return RM::empty();
         }
         // Move the content to the arena by copying and then forgetting it.
         unsafe {
             let start_ptr = arena.alloc_raw_slice(len);
             self.as_ptr().copy_to_nonoverlapping(start_ptr, len);
             self.set_len(0);
-            from_raw_parts(start_ptr, len)
+            RM::from_raw_parts(start_ptr, len)
         }
     }
+}
+
+impl RefMutability for Shared {
+    type Ref<'a, T> = &'a T where T: 'a;
+    type SliceRef<'a, T> = &'a [T] where T: 'a;
+
+    fn empty<'a, T>() -> Self::SliceRef<'a, T> {
+        &[]
+    }
+
+    unsafe fn from_ptr<'a, T>(t: *mut T) -> Self::Ref<'a, T> {
+        &*t
+    }
+
+    unsafe fn from_raw_parts<'a, T>(t: *mut T, len: usize) -> Self::SliceRef<'a, T> {
+        from_raw_parts(t, len)
+    }
+
+    fn as_ref<T>(t: Self::Ref<'_, T>) -> &T {
+        t
+    }
+
+    fn as_slice_ref<T>(t: Self::SliceRef<'_, T>) -> &[T] {
+        t
+    }
+}
+
+impl RefMutability for Mutable {
+    type Ref<'a, T> = &'a mut T where T: 'a;
+    type SliceRef<'a, T> = &'a mut [T] where T: 'a;
+
+    fn empty<'a, T>() -> Self::SliceRef<'a, T> {
+        &mut []
+    }
+
+    unsafe fn from_ptr<'a, T>(t: *mut T) -> Self::Ref<'a, T> {
+        &mut *t
+    }
+
+    unsafe fn from_raw_parts<'a, T>(t: *mut T, len: usize) -> Self::SliceRef<'a, T> {
+        from_raw_parts_mut(t, len)
+    }
+
+    fn as_ref<T>(t: Self::Ref<'_, T>) -> &T {
+        t
+    }
+
+    fn as_slice_ref<T>(t: Self::SliceRef<'_, T>) -> &[T] {
+        t
+    }
+}
+
+mod private {
+    use super::{Mutable, Shared};
+
+    pub trait Sealed {}
+
+    impl Sealed for Shared {}
+    impl Sealed for Mutable {}
 }
