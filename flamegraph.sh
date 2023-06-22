@@ -8,7 +8,7 @@ cargo +nightly flamegraph \
   --output "$SCRIPT_PATH/benches/target/criterion/report/flamegraph.svg" \
   --root \
   --deterministic \
-  -- --bench -- "$@"
+  -- --bench --profile-time 5 "$@"
 
 TARGET_DIR="$SCRIPT_PATH/benches"
 while [ ! -d "$TARGET_DIR/target" ]; do

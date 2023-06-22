@@ -12,3 +12,7 @@ while [ ! -d "$TARGET_DIR/target" ]; do
 done
 
 cp -r "$TARGET_DIR/target/criterion" "$SCRIPT_PATH/criterion"
+# Make the violin plots white for the GitHub README, invisible on the website
+# And use sed -i.bak for macOS (BSD) sed
+find "$SCRIPT_PATH/criterion" -name "*.svg" -exec sed -i.bak 's/fill="none"\/>/fill="white"\/>/g' {} \;
+find "$SCRIPT_PATH/criterion" -name "*.svg.bak" -exec rm {} \;

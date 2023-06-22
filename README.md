@@ -26,13 +26,12 @@ A port of [`rustc_arena`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_a
 
 ## Benchmarks
 
-<section style="background-color: white; padding: 0.5em">
-    <img alt="alloc" src="criterion/alloc/report/violin.svg" />
-    <img alt="alloc_from_iter" src="criterion/alloc_from_iter/report/violin.svg" />
-    <img alt="iter" src="criterion/iter/report/violin.svg" />
-    <img alt="into_vec" src="criterion/into_vec/report/violin.svg" />
-    <a href="criterion/report/index.html">Full Report</a>
-</section>
+[Full Report](criterion/report/index.html)
+
+![alloc](criterion/alloc/report/violin.svg)
+![alloc_from_iter](criterion/alloc_from_iter/report/violin.svg)
+![iter](criterion/iter/report/violin.svg)
+![into_vec](criterion/into_vec/report/violin.svg)
 
 ## License
 
