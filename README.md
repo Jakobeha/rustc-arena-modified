@@ -26,7 +26,12 @@ A port of [`rustc_arena`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_a
 
 ## Benchmarks
 
-![benchmarks](criterion/report.html)
+![alloc](criterion/alloc/report/violin.svg)
+![alloc_from_iter](criterion/alloc_from_iter/report/violin.svg)
+![iter](criterion/iter/report/violin.svg)
+![into_vec](criterion/into_vec/report/violin.svg)
+
+[Full report](criterion/report/index.html)
 
 ## License
 
