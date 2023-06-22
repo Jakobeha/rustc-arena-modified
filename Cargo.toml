@@ -2,7 +2,26 @@
 name = "rustc-arena-modified"
 version = "0.1.0"
 edition = "2021"
+categories = ["memory-management"]
+keywords = ["arena"]
+description = "rustc-arena ported to stable rust with additional features"
+repository = "https://github.com/Jakobeha/rustc-arena-modified"
+documentation = "https://docs.rs/rustc-arena-modified"
+# Benchmarks are in a separate workspace with criterion (see benches/README.md for more)
+exclude = ["benches"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+autobenches = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+# Benchmarks are additional tests, we run them with the criterion bencher replaced by stubs
+[[test]]
+name = "typed-arena-benchmarks"
+path = "benches/typed_arena.rs"
+harness = true
 
 [dependencies]
+smallvec = "1.10.0"
+
+[dev-dependencies]
+rand = { version = "0.8.5", features = ["small_rng"] }
+typed-arena = "2.0.2"

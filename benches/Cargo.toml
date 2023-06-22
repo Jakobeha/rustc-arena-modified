@@ -1,0 +1,24 @@
+[package]
+name = "rustc-arena-modified-benchmarks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bench]]
+name = "typed_arena"
+path = "typed_arena.rs"
+harness = false
+
+[profile.bench]
+debug = true
+
+[features]
+default = ["bench"]
+bench = ["criterion"]
+nightly = []
+
+[dependencies]
+rustc-arena-modified = { path = ".." }
+typed-arena = "2.0.2"
+criterion = { version = "0.5.1", optional = true }
+rand = { version = "0.8.5", features = ["small_rng"] }
