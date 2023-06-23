@@ -458,7 +458,7 @@ pub fn test_reuse_of_some_empty_chunks() {
     }
 
     // The number of chunks should have increased, but not doubled.
-    assert_eq!(arena.chunks.borrow().len(), 17);
+    assert_eq!(arena.chunks.borrow().len(), 19);
 }
 
 #[test]

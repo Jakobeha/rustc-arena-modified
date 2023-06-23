@@ -412,7 +412,7 @@ impl<T, RM: RefMutability> TypedArenaGen<T, RM> {
                 last_chunk.entries = 0;
                 // Set ptr and end to this chunk, and make sure ptr is offset past the existing entries
                 self.ptr.set(unsafe { last_chunk.storage.add(num_in_last) });
-                self.ptr.set(last_chunk.end());
+                self.end.set(last_chunk.end());
             }
         }
 
