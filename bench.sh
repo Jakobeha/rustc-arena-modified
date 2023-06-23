@@ -11,6 +11,9 @@ while [ ! -d "$TARGET_DIR/target" ]; do
   fi
 done
 
+if [ -d "$SCRIPT_PATH/criterion" ]; then
+  rm -rf "$SCRIPT_PATH/criterion"
+fi
 cp -r "$TARGET_DIR/target/criterion" "$SCRIPT_PATH/criterion"
 # Make the violin plots white for the GitHub README, invisible on the website
 # And use sed -i.bak for macOS (BSD) sed

@@ -8,7 +8,6 @@ extern crate rustc_driver;
 
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rustc_arena_modified::typed_arena::RefMutability;
-use std::marker::PhantomData;
 
 // region benchmark abstraction / implementation
 trait Bencher {
@@ -175,43 +174,6 @@ impl<T> TypedArena<T> for typed_arena::Arena<T> {
         true
     }
 }
-
-/// Instead of allocating to an arena, we just allocate and leak the memory.
-struct AllocAndLeak<T>(PhantomData<T>);
-
-impl<T> Default for AllocAndLeak<T> {
-    fn default() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl<T> TypedArena<T> for AllocAndLeak<T> {
-    type Iter<'a> = std::iter::Empty<&'a mut T> where T: 'a;
-
-    fn alloc(&self, value: T) -> &T {
-        Box::leak(Box::new(value))
-    }
-
-    fn alloc_from_iter(&self, values: impl Iterator<Item = T>) -> &[T] {
-        Box::leak(values.collect::<Vec<_>>().into_boxed_slice())
-    }
-
-    fn iter(&mut self) -> Self::Iter<'_> {
-        panic!("AllocAndLeak \"arena\" doesn't implement iter")
-    }
-
-    fn into_vec(self) -> Vec<T> {
-        panic!("AllocAndLeak \"arena\" doesn't implement into_vec")
-    }
-
-    fn supports(bench_fn: &'static str) -> bool {
-        match bench_fn {
-            "bench_alloc" | "bench_alloc_from_iter" => true,
-            "bench_iter" | "bench_into_vec" => false,
-            _ => panic!("Unknown bench function: {}", bench_fn),
-        }
-    }
-}
 // endregion
 
 trait Benchmarks: Bencher {
@@ -331,7 +293,6 @@ macro_rules! generate_benches {
                 #[cfg(feature = "nightly")]
                 rustc_arena: rustc_arena::TypedArena<usize>,
                 typed_arena: typed_arena::Arena<usize>,
-                alloc_and_leak: AllocAndLeak<usize>,
             });
         )*
     };

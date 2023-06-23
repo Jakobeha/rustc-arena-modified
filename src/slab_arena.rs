@@ -77,7 +77,7 @@ impl<T> SlabArena<T> {
     #[inline]
     pub fn alloc(&self, value: T) -> RefMut<'_, T> {
         let entry = match self.next_free.get() {
-            None => NonNull::new(self.arena.alloc(Entry::Occupied { value })).unwrap(),
+            None => NonNull::from(self.arena.alloc(Entry::Occupied { value })),
             Some(mut next_free) => {
                 // SAFETY: This entry is alive and unused by definition of being `next_free`
                 let next_free_mut = unsafe { next_free.as_mut() };
@@ -150,7 +150,7 @@ impl<'a, T> RefMut<'a, T> {
     #[inline]
     pub fn as_ptr(&self) -> NonNull<T> {
         // SAFETY: `RefMut`'s entry is `Some` until consumed or dropped
-        let mut entry = unsafe { self.entry.clone().unwrap_unchecked() };
+        let mut entry = unsafe { self.entry.unwrap_unchecked() };
         // SAFETY: `RefMut`'s entry is live and it has exclusive access
         match unsafe { entry.as_mut() } {
             Entry::Occupied { value } => NonNull::new(value).unwrap(),
@@ -158,9 +158,9 @@ impl<'a, T> RefMut<'a, T> {
         }
     }
 
-    /// Convert into an [UnsafeRef]. Afterwards, you are responsible for calling [UnsafeRef::remove]
-    /// or the entry will never be freed. Additionally, you are responsible for maintaining all of
-    /// [UnsafeRef]'s invariants (see its doc).
+    /// Convert into an [UnsafeRef]. Afterwards, you are responsible for calling [UnsafeRef::take]
+    /// or [UnsafeRef::discard] or the entry will never be freed. Additionally, you are responsible
+    /// for maintaining all of [UnsafeRef]'s invariants (see its doc).
     ///
     /// Doing the conversion itself is safe, because at worst it will only leak memory during the
     /// arena's lifetime (not even in general) which is not UB. *Using* the [UnsafeRef] is unsafe.
@@ -175,13 +175,13 @@ impl<'a, T> RefMut<'a, T> {
 
 impl<'a, T: Debug> Debug for RefMut<'a, T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("RefMut").field(&*self).finish()
+        f.debug_tuple("RefMut").field(self).finish()
     }
 }
 
 impl<'a, T: Display> Display for RefMut<'a, T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        T::fmt(&*self, f)
+        T::fmt(self, f)
     }
 }
 
@@ -300,9 +300,7 @@ impl<T> UnsafeRef<T> {
 impl<T> Clone for UnsafeRef<T> {
     #[inline]
     fn clone(&self) -> Self {
-        Self {
-            entry: self.entry.clone(),
-        }
+        Self { entry: self.entry }
     }
 }
 
