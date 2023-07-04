@@ -334,7 +334,7 @@ impl<T> UnsafeRef<T> {
 impl<T> Clone for UnsafeRef<T> {
     #[inline]
     fn clone(&self) -> Self {
-        Self { entry: self.entry }
+        *self
     }
 }
 

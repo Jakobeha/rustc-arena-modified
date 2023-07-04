@@ -5,6 +5,8 @@
 [![License](https://img.shields.io/crates/l/rustc-arena-modified.svg?style=flat-square)](https://github.com/Jakobeha/rustc-arena-modified#license)
 [![Documentation](https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square)](https://docs.rs/rustc-arena-modified)
 
+Forked from [rustc_arena](https://doc.rust-lang.org/stable/nightly-rustc/rustc_arena/index.html)
+
 ## Why would you want this?
 
 - Allocating objects in an arena can be faster then regular allocation
@@ -25,7 +27,13 @@ A port of [`rustc_arena`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_a
 - `TypedArena::iter` to iterate over all objects in the arena
 - `TypedArena::retain` and `TypedArena::clear` to coalesce clearing objects behind a mutable reference, while saving the chunks so they don't need to be re-allocated.
 
+## Safety
+
+This library makes heavy use of `unsafe` and isn't fully tested with MIRI. There are tests for most operations and edge cases, and the base functionality is copied almost verbatim from `rustc_arena` which is very well-tested. But the extra functionality is much less tested, and especially with the heavy use of `unsafe`, it shouldn't be used in production.
+
 ## Benchmarks
+
+Overall, performs around the same speed as `rustc_arena` and `typed_arena`, except iteration is significantly faster than `typed_arena`. `slab_arena` performs noticeably slower.
 
 [Full Report](criterion/report/index.html)
 
