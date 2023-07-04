@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::fmt::{Debug, Display, Formatter};
-use std::mem::replace;
+use std::mem::{replace, size_of};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
@@ -49,6 +49,7 @@ pub struct UnsafeRef<T> {
 }
 
 #[derive(Debug)]
+#[repr(C)]
 enum Entry<T> {
     /// A value is present
     Occupied { value: T },
@@ -227,6 +228,31 @@ impl<'a, T> Drop for RefMut<'a, T> {
 }
 
 impl<T> UnsafeRef<T> {
+    /// Convert a pointer to an occupied entry back into an [UnsafeRef].
+    ///
+    /// # Safety
+    /// The pointer must be valid and point to an occupied entry in the arena.
+    #[inline]
+    pub unsafe fn from_ptr(ptr: NonNull<T>) -> Self {
+        Self {
+            entry: NonNull::new_unchecked(
+                ptr.as_ptr()
+                    .cast::<u8>()
+                    .sub(Entry::<T>::offset_of_occupied_value())
+                    .cast(),
+            ),
+        }
+    }
+
+    /// Convert a reference to an occupied entry back into an [UnsafeRef].
+    ///
+    /// # Safety
+    /// The reference must point to an occupied entry in the arena.
+    #[inline]
+    pub unsafe fn from_ref(r#ref: &T) -> Self {
+        Self::from_ptr(NonNull::from(r#ref))
+    }
+
     /// Convert back into a safe [RefMut].
     ///
     /// # Safety
@@ -260,9 +286,10 @@ impl<T> UnsafeRef<T> {
     /// Get the entry as a shared reference
     ///
     /// # Safety
-    /// All of [UnsafeRef]'s requirements must be met (see type doc).
+    /// All of [UnsafeRef]'s requirements must be met (see type doc), and `&'a T` must not outlive
+    /// this ref OR live when a mutable reference to its data is created.
     #[inline]
-    pub unsafe fn as_ref(&self) -> &T {
+    pub unsafe fn as_ref<'a>(&self) -> &'a T {
         match self.entry.as_ref() {
             Entry::Occupied { value } => value,
             Entry::Vacant { .. } => {
@@ -274,9 +301,10 @@ impl<T> UnsafeRef<T> {
     /// Get the entry as a mutable reference
     ///
     /// # Safety
-    /// All of [UnsafeRef]'s requirements must be met (see type doc).
+    /// All of [UnsafeRef]'s requirements must be met (see type doc), and `&'a mut T` must not
+    /// outlive this ref OR live when another reference to its data is created.
     #[inline]
-    pub unsafe fn as_mut(&mut self) -> &mut T {
+    pub unsafe fn as_mut<'a>(&mut self) -> &'a mut T {
         // SAFETY: `UnsafeRef`'s entry is live and it has exclusive access
         match self.entry.as_mut() {
             Entry::Occupied { value } => value,
@@ -295,6 +323,12 @@ impl<T> UnsafeRef<T> {
     pub unsafe fn as_ptr(&self) -> NonNull<T> {
         NonNull::from(self.as_ref())
     }
+
+    /// Whether both [UnsafeRef]s point to the same element
+    #[inline]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        self.entry == other.entry
+    }
 }
 
 impl<T> Clone for UnsafeRef<T> {
@@ -307,6 +341,11 @@ impl<T> Clone for UnsafeRef<T> {
 impl<T> Copy for UnsafeRef<T> {}
 
 impl<T> Entry<T> {
+    #[inline]
+    const fn offset_of_occupied_value() -> usize {
+        size_of::<Self>() - size_of::<T>()
+    }
+
     #[inline]
     fn is_occupied(&self) -> bool {
         match self {
