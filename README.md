@@ -1,7 +1,7 @@
 # rustc-arena-modified: rustc-arena ported to stable rust with additional features
 
 [![CI](https://github.com/Jakobeha/rustc-arena-modified/workflows/CI/badge.svg)](https://github.com/Jakobeha/rustc-arena-modified/actions)
-[![Crate informations](https://img.shields.io/crates/v/rustc-arena-modified.svg?style=flat-square)](https://crates.io/crates/rustc-arena-modified)
+[![Crate information](https://img.shields.io/crates/v/rustc-arena-modified.svg?style=flat-square)](https://crates.io/crates/rustc-arena-modified)
 [![License](https://img.shields.io/crates/l/rustc-arena-modified.svg?style=flat-square)](https://github.com/Jakobeha/rustc-arena-modified#license)
 [![Documentation](https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square)](https://docs.rs/rustc-arena-modified)
 
