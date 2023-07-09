@@ -97,8 +97,51 @@ impl<T> SlabArena<T> {
         RefMut::new(entry, self)
     }
 
-    // Iteration, etc. are useless because there must be no active refs, which implies there should
-    // be no entries in the arena unless we are leaking them
+    /// Iterate all entries and free those which don't pass the predicate, dropping their contents
+    /// and adding them to the free list. This also gives you mutable access to each entry.
+    ///
+    /// This takes a mutable reference, so there must be no active references to the arena.
+    #[inline]
+    pub fn retain(&mut self, mut predicate: impl FnMut(&mut T) -> bool) {
+        for entry in self.arena.iter_mut() {
+            let do_free = match entry {
+                Entry::Occupied { value } => !predicate(value),
+                Entry::Vacant { .. } => false,
+            };
+            if do_free {
+                let entry_ptr = NonNull::new(entry as *mut Entry<T>).unwrap();
+                let next_free = self.next_free.replace(Some(entry_ptr));
+                debug_assert!(entry.is_occupied());
+                *entry = Entry::Vacant { next_free };
+            }
+        }
+    }
+
+    /// Iterate all entries and free those which don't pass the predicate, dropping their contents
+    /// and adding them to the free list.
+    ///
+    /// # Safety
+    /// Each removed entry *must* have no other references, and *every* entry must have no active
+    /// mutable references ([RefMut]s are OK as long as they aren't mutably dereferenced). Consider
+    /// using [Self::retain], which enforces these requirements by taking a mutable reference of the
+    /// entire arena.
+    #[inline]
+    pub unsafe fn retain_shared(&self, mut predicate: impl FnMut(&T) -> bool) {
+        for mut entry in self.arena.ptr_iter() {
+            let do_free = match entry.as_ref() {
+                Entry::Occupied { value } => !predicate(value),
+                Entry::Vacant { .. } => false,
+            };
+            if do_free {
+                let next_free = self.next_free.replace(Some(entry));
+                debug_assert!(entry.as_ref().is_occupied());
+                *entry.as_mut() = Entry::Vacant { next_free };
+            }
+        }
+    }
+
+    // Iteration, etc. are either mutable or unsafe, because there could be arbitrary active mutable
+    // references created entirely from safe code if we have a shared reference.
 }
 
 impl<T> Default for SlabArena<T> {

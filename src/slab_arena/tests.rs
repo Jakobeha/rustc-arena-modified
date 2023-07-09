@@ -496,3 +496,82 @@ fn test_discard_and_verify_removal() {
 
     assert!(iter_mut.next().is_none());
 }
+
+/// Test `retain` functionality, using underlying [TypedArena] iteration as the ground truth.
+#[test]
+fn test_retain() {
+    let mut arena = SlabArena::new();
+
+    for i in 0..10000 {
+        arena.alloc(i).leak();
+    }
+
+    arena.retain(|x| *x % 5 != 0);
+
+    let mut num_vacant = 0;
+    let mut num_occupied = 0;
+    for entry in &mut arena.arena {
+        match entry {
+            Entry::Occupied { value } => {
+                assert_ne!(*value % 5, 0);
+                num_occupied += 1;
+            }
+            Entry::Vacant { .. } => num_vacant += 1,
+        }
+    }
+    assert_eq!(num_occupied, 8000);
+    assert_eq!(num_vacant, 2000);
+}
+
+/// Test `retain_shared` functionality, using underlying [TypedArena] iteration as the ground truth.
+#[test]
+fn test_retain_shared() {
+    let mut arena = SlabArena::new();
+    let mut retained = Vec::new();
+
+    for i in 0..10000 {
+        let r#ref = arena.alloc(i);
+        if i % 5 == 0 {
+            retained.push(r#ref.leak());
+        }
+    }
+    assert_eq!(retained.len(), 2000, "obvious case failed?");
+
+    unsafe { arena.retain_shared(|x| *x % 5 == 0) };
+
+    let mut num_vacant = 0;
+    let mut num_occupied = 0;
+    for entry in &mut arena.arena {
+        match entry {
+            Entry::Occupied { value } => {
+                assert_eq!(*value % 5, 0);
+                num_occupied += 1;
+            }
+            Entry::Vacant { .. } => num_vacant += 1,
+        }
+    }
+    assert_eq!(num_occupied, 2000);
+    assert_eq!(num_vacant, 8000);
+
+    // Ensure that the retained references are still valid
+    for i in 0..2000 {
+        retained[i] += 2;
+        assert_eq!(*retained[i], i * 5 + 2);
+    }
+
+    // Make it clear retained can no longer be held at the calls to retained_shared
+    drop(retained);
+
+    arena.retain(|x| *x % 5 == 0);
+    // Just to be extra safe
+    unsafe { arena.retain_shared(|x| *x % 5 == 0) };
+
+    for entry in &mut arena.arena {
+        if let Entry::Occupied { value } = entry {
+            panic!(
+                "Expected all entries to be vacant, but at least one is occupied: {}",
+                value
+            );
+        }
+    }
+}
