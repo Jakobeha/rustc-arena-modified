@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::fmt::{Debug, Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::mem::{replace, size_of};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
@@ -382,6 +383,22 @@ impl<T> Clone for UnsafeRef<T> {
 }
 
 impl<T> Copy for UnsafeRef<T> {}
+
+impl<T> PartialEq for UnsafeRef<T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.entry == other.entry
+    }
+}
+
+impl<T> Eq for UnsafeRef<T> {}
+
+impl<T> Hash for UnsafeRef<T> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.entry.hash(state)
+    }
+}
 
 impl<T> Entry<T> {
     #[inline]

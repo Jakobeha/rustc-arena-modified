@@ -528,20 +528,35 @@ fn test_retain() {
 fn test_retain_shared() {
     let mut arena = SlabArena::new();
     let mut retained = Vec::new();
+    let mut not_retained = Vec::new();
 
     for i in 0..10000 {
         let r#ref = arena.alloc(i);
         if i % 5 == 0 {
-            retained.push(r#ref.leak());
+            // We can't have active *mutable* references when we call retain_shared and ptr_iter,
+            // but we can have active *shared* references, because we create other shared references
+            retained.push(r#ref.leak() as &i32);
+        } else {
+            not_retained.push(r#ref)
         }
     }
+    // We want to keep these until this point so we don't reuse entries
+    drop(not_retained);
+    assert_eq!(arena.arena.len(), 10000);
     assert_eq!(retained.len(), 2000, "obvious case failed?");
 
+    // SAFETY: We only retain shared references, and aren't removing any of the retained references
     unsafe { arena.retain_shared(|x| *x % 5 == 0) };
 
+    assert_eq!(arena.arena.len(), 10000);
     let mut num_vacant = 0;
     let mut num_occupied = 0;
-    for entry in &mut arena.arena {
+    // SAFETY: We only retain shared references, so it's ok to dereference
+    for entry in arena
+        .arena
+        .ptr_iter()
+        .map(|entry| unsafe { entry.as_ref() })
+    {
         match entry {
             Entry::Occupied { value } => {
                 assert_eq!(*value % 5, 0);
@@ -555,16 +570,15 @@ fn test_retain_shared() {
 
     // Ensure that the retained references are still valid
     for i in 0..2000 {
-        retained[i] += 2;
-        assert_eq!(*retained[i], i * 5 + 2);
+        assert_eq!(*retained[i], i as i32 * 5);
     }
 
     // Make it clear retained can no longer be held at the calls to retained_shared
     drop(retained);
 
-    arena.retain(|x| *x % 5 == 0);
+    arena.retain(|x| *x % 5 != 0);
     // Just to be extra safe
-    unsafe { arena.retain_shared(|x| *x % 5 == 0) };
+    unsafe { arena.retain_shared(|x| *x % 5 != 0) };
 
     for entry in &mut arena.arena {
         if let Entry::Occupied { value } = entry {
